@@ -6,6 +6,7 @@ import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types';
 import type { AgenticTeam } from '$lib/types/teams';
 import { registeredTeams, defaultActiveTeamId } from '$lib/data/teams';
+import { enforceRateLimit, requireControlAuth } from '$lib/server/mcp-auth';
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -47,14 +48,17 @@ async function resolveTeamsDir(): Promise<string | null> {
 }
 
 async function loadTeamsFromDir(dir: string): Promise<AgenticTeam[]> {
+	const resolvedDir = path.resolve(dir);
 	try {
-		const entries = await fs.readdir(dir, { withFileTypes: true });
+		const entries = await fs.readdir(resolvedDir, { withFileTypes: true });
 		const files = entries
 			.filter((e) => e.isFile() && e.name.toLowerCase().endsWith('.json'))
-			.map((e) => path.join(dir, e.name));
+			.map((e) => path.join(resolvedDir, e.name));
 
 		const teams: AgenticTeam[] = [];
 		for (const file of files) {
+			// Prevent path traversal: reject files outside the resolved directory
+			if (path.resolve(file) !== file) continue;
 			try {
 				const raw = await fs.readFile(file, 'utf8');
 				const parsed = JSON.parse(raw) as AgenticTeam;
@@ -86,12 +90,31 @@ async function getTeamRegistry(): Promise<{ teams: AgenticTeam[]; active_team_id
 	return { teams, active_team_id };
 }
 
-export const GET: RequestHandler = async () => {
+export const GET: RequestHandler = async (event) => {
+	const unauthorized = requireControlAuth(event, {
+		surface: 'TeamsAPI',
+		apiKeyEnvVar: 'SPARK_BRIDGE_API_KEY',
+		fallbackApiKeyEnvVar: 'MCP_API_KEY',
+		allowLoopbackWithoutKey: true,
+		allowedOriginsEnvVar: 'MCP_ALLOWED_ORIGINS'
+	});
+	if (unauthorized) return unauthorized;
+
 	const registry = await getTeamRegistry();
 	return json(registry);
 };
 
-export const POST: RequestHandler = async ({ request }) => {
+export const POST: RequestHandler = async (event) => {
+	const unauthorized = requireControlAuth(event, {
+		surface: 'TeamsAPI',
+		apiKeyEnvVar: 'SPARK_BRIDGE_API_KEY',
+		fallbackApiKeyEnvVar: 'MCP_API_KEY',
+		allowLoopbackWithoutKey: true,
+		allowedOriginsEnvVar: 'MCP_ALLOWED_ORIGINS'
+	});
+	if (unauthorized) return unauthorized;
+
+	const { request } = event;
 	const body = await request.json();
 	const { action, team_id, agent_id } = body;
 
